@@ -1,0 +1,86 @@
+import path from 'node:path';
+import cors from 'cors';
+import express, { type Express, type Router } from 'express';
+import helmet from 'helmet';
+import { createAuthRouter } from './modules/auth/auth.routes';
+import { env } from './config/env';
+import { pool } from './database/pool';
+import { adminRouter } from './modules/admin/admin.routes';
+import { portalRouter } from './modules/executive-portal/portal.routes';
+import { managerPortalRouter } from './modules/manager-portal/portal.routes';
+import { viewRouter } from './modules/view/view.routes';
+import { pushRouter } from './modules/push/push.routes';
+import { noteRouter } from './modules/notes/note.routes';
+import { notificationRouter } from './modules/notifications/notification.routes';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+import { createLoginLimiter } from './middleware/rateLimit';
+import { createMagicbricksRouter } from './modules/webhooks/magicbricks.routes';
+import { create99acresRouter } from './modules/webhooks/99acres.routes';
+import { zohoIntegrationRouter } from './modules/zoho/zoho.routes';
+
+export interface AppOptions {
+  /** Override the failed-login limit (tests). Defaults to LOGIN_RATE_LIMIT_MAX. */
+  loginRateLimitMax?: number;
+  /** Override the public Magicbricks webhook limit (tests). Defaults to WEBHOOK_RATE_LIMIT_MAX requests/minute/IP. */
+  magicbricksRateLimitMax?: number;
+  /** Override the public 99acres webhook limit (tests). Defaults to WEBHOOK_RATE_LIMIT_MAX requests/minute/IP. */
+  acres99RateLimitMax?: number;
+}
+
+/** `mount` lets future modules (and tests) add routes under /api/v1 before the 404/error handlers. */
+export function createApp(mount?: (api: Router) => void, options: AppOptions = {}): Express {
+  const app = express();
+  app.disable('x-powered-by');
+  // Render and similar platforms terminate TLS at a reverse proxy. Keep the explicit
+  // setting available, but use one trusted proxy in production when it is omitted so
+  // express-rate-limit can safely process X-Forwarded-For.
+  if (env.TRUST_PROXY !== undefined) app.set('trust proxy', env.TRUST_PROXY);
+  else if (env.NODE_ENV === 'production') app.set('trust proxy', 1);
+
+  // Dev-only manual test page. Registered before helmet: its CSP would block the page's inline script.
+  if (env.NODE_ENV !== 'production') {
+    app.get('/test-console', (_req, res) => {
+      res.sendFile(path.join(process.cwd(), 'public', 'test-console.html'));
+    });
+  }
+
+  app.use(helmet());
+  // No origins configured => no CORS headers at all (same-origin only).
+  if (env.corsOrigins.length > 0) {
+    app.use(cors({ origin: env.corsOrigins, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], allowedHeaders: ['Authorization', 'Content-Type'], maxAge: 600 }));
+  }
+  // This public integration gets a stricter parser limit and has no authentication middleware by design.
+  app.use('/api/v1/webhooks/magicbricks', express.json({ limit: '32kb', strict: true }), createMagicbricksRouter(options.magicbricksRateLimitMax));
+  app.use('/api/v1/webhooks/99acres', express.json({ limit: '32kb', strict: true }), create99acresRouter(options.acres99RateLimitMax));
+  app.use(express.json({ limit: '100kb', strict: true }));
+
+  // Liveness: the process is up (no database). /health is readiness: it also checks the database.
+  app.get('/health/live', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+  app.get('/health', async (_req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      res.json({ status: 'ok', db: 'up' });
+    } catch {
+      res.status(503).json({ status: 'unavailable', db: 'down' });
+    }
+  });
+
+  const api = express.Router();
+  api.use('/auth', createAuthRouter(createLoginLimiter(options.loginRateLimitMax)));
+  api.use('/integrations/zoho', zohoIntegrationRouter);
+  api.use('/admin', adminRouter);
+  api.use('/executive', portalRouter);
+  api.use('/manager', managerPortalRouter);
+  api.use('/view', viewRouter);
+  api.use('/notes', noteRouter);
+  api.use('/notifications', notificationRouter);
+  api.use('/push', pushRouter);
+  mount?.(api);
+  app.use('/api/v1', api);
+
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+  return app;
+}

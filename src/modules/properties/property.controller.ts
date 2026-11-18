@@ -1,0 +1,37 @@
+import type { Request, Response } from 'express';
+import { UnauthorizedError } from '../../utils/errors';
+import { parse } from '../../utils/validate';
+import * as service from './property.service';
+import { historyQuery, idParam, inquiryQuery, listPropertiesQuery } from './property.validation';
+
+const id = (req: Request) => parse(idParam, req.params).id;
+
+export const list = async (req: Request, res: Response) => {
+  res.json(await service.listProperties(parse(listPropertiesQuery, req.query)));
+};
+export const get = async (req: Request, res: Response) => {
+  const q = parse(inquiryQuery, req.query);
+  const managerId = req.user?.role === 'MANAGER' ? req.user.id : undefined;
+  res.json(await service.getPropertyDetails(id(req), q.limit, q.offset, managerId));
+};
+export const update = async (req: Request, res: Response) => {
+  res.json(await service.updateProperty(id(req), req.body));
+};
+export const setStatus = async (req: Request, res: Response) => {
+  res.json(await service.setPropertyStatus(id(req), req.body.isActive));
+};
+export const archive = async (req: Request, res: Response) => {
+  res.json(await service.setPropertyStatus(id(req), false));
+};
+export const setExecutives = async (req: Request, res: Response) => {
+  res.json(await service.setExecutives(id(req), req.body.executiveIds));
+};
+// ---- manager: same properties, but they only edit their own executives' part of the list ----
+export const managerSetExecutives = async (req: Request, res: Response) => {
+  if (!req.user) throw new UnauthorizedError();
+  res.json(await service.setExecutives(id(req), req.body.executiveIds, req.user.id));
+};
+export const history = async (req: Request, res: Response) => {
+  const q = parse(historyQuery, req.query);
+  res.json(await service.getAssignmentHistory(id(req), q.limit, q.offset));
+};

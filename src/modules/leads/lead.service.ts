@@ -1,0 +1,507 @@
+import { withTransaction, type Db } from '../../database/transaction';
+import { AppError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors';
+import * as executiveRepo from '../executives/executive.repository';
+import * as assignmentRepo from '../assignment/assignment.repository';
+import * as settingsRepo from '../settings/settings.repository';
+import * as settingsService from '../settings/settings.service';
+import { pool } from '../../database/pool';
+import { env } from '../../config/env';
+import * as customerRepo from '../customers/customer.repository';
+import * as propertyRepo from '../properties/property.repository';
+import type { UserRole } from '../users/user.model';
+import type { PropertySource } from '../properties/property.model';
+import { propertyAssignmentService } from '../assignment/assignment.service';
+import * as repo from './lead.repository';
+import * as activityRepo from './lead-activity.repository';
+import type { ActivityRow } from './lead-activity.repository';
+import { recordAssigned, recordComment, recordPropertyResolved, recordReceived, recordStatus, recordTimeout, recordTransferred } from './lead-activity.service';
+import { publishAssignment, publishCommentAdded, publishLeadCreated, publishSlaReassignment, publishSlaWarning, publishStatusUpdated } from './lead.events';
+import { toLeadDto, type EnquiryType, type LeadStatus, type StatusReasonCode } from './lead.model';
+import { matchProperty } from '../property-matching/property-matching.service';
+import * as mappingRepo from '../property-mappings/property-mapping.repository';
+import { normalizePropertyName } from '../property-matching/matching.policy';
+
+export interface NewLeadInput {
+  name: string;
+  mobile: string; // already normalised
+  email?: string | null;
+  /** Name as the portal sent it. Matched to an existing property, or a stub is created once. */
+  propertyName: string;
+  source: PropertySource;
+  externalPropertyId?: string | null;
+  externalPropertyName?: string | null;
+  externalPropertyUrl?: string | null;
+  budget?: number | null;
+  requirement?: string | null;
+  /** Does the client want to rent or buy? Optional. */
+  enquiryType?: EnquiryType | null;
+  message?: string | null;
+  /** Portal's own enquiry id. When given, submitting the same one again returns the existing lead. */
+  externalLeadId?: string | null;
+  /** Timestamp supplied by the portal, retained separately from CRM acceptance time when available. */
+  externalCreatedAt?: Date | null;
+  rawPayload?: unknown;
+  /** Give the lead straight to this executive (already checked with `assertAssignable`) instead of the round-robin. */
+  assignTo?: { executiveId: string; byId: string };
+}
+
+const pendingNotice = (propertyName: string) =>
+  `No executive is assigned to ${propertyName}. Please assign an executive before processing this lead.`;
+
+/**
+ * The single entry point for creating a lead: today the admin API, later the 99acres/Magicbricks webhook.
+ *
+ *   find the property by normalised name (creating ONE stub if the name is new)
+ *   -> save customer + lead -> round-robin over the property's hand-picked executives
+ *   -> nobody to assign: the lead stays PENDING_ASSIGNMENT and `notice` says what to do.
+ *
+ * Everything is ONE transaction, so an enquiry is never stored half-assigned. The property name is
+ * unique by normalised form in the database, so concurrent leads for a new property create it once.
+ */
+export async function createLead(input: NewLeadInput, viewerId?: string) {
+  const source = input.source;
+  const externalLeadId = input.externalLeadId ?? null;
+  if (externalLeadId) {
+    const existing = await repo.findByExternalId(source, externalLeadId, viewerId);
+    if (existing) return { created: false, lead: toLeadDto(existing) };
+  }
+
+  try {
+    const activities: ActivityRow[] = [];
+    const fallback = await settingsService.getUnmatchedPropertyRoutingSetting();
+    const { leadId, notice } = await withTransaction(async (tx) => {
+      const match = await matchProperty({
+        source,
+        propertyName: input.propertyName,
+        externalPropertyId: input.externalPropertyId,
+        externalPropertyName: input.externalPropertyName,
+        externalPropertyUrl: input.externalPropertyUrl,
+      }, tx);
+      const property = match.property
+        ? { id: match.property.id, created: false }
+        : await propertyRepo.findOrCreateStub(tx, input.propertyName);
+      if (!match.property && input.externalPropertyId) {
+        await mappingRepo.insertIfAbsent(tx, {
+          propertyId: property.id,
+          source,
+          externalId: input.externalPropertyId,
+          externalName: input.externalPropertyName ?? input.propertyName,
+          normalizedName: normalizePropertyName(input.externalPropertyName ?? input.propertyName),
+          url: input.externalPropertyUrl ?? null,
+          actorId: null,
+        });
+      }
+      const customer = await customerRepo.upsertByMobile(tx, {
+        name: input.name,
+        mobile: input.mobile,
+        email: input.email ?? null,
+      });
+      const id = await repo.insert(tx, {
+        customerId: customer.id,
+        propertyId: property.id,
+        source,
+        message: input.message ?? null,
+        requirement: input.requirement ?? null,
+        enquiryType: input.enquiryType ?? null,
+        budget: input.budget ?? null,
+        propertyName: input.propertyName,
+        externalLeadId,
+        externalCreatedAt: input.externalCreatedAt ?? null,
+        rawPayload: input.rawPayload,
+        externalPropertyId: input.externalPropertyId ?? null,
+        externalPropertyName: input.externalPropertyName ?? input.propertyName,
+        externalPropertyUrl: input.externalPropertyUrl ?? null,
+        propertyMatchStatus: match.status,
+        propertyMatchMethod: match.method,
+        propertyMatchConfidence: match.confidence,
+        propertyMatchCandidates: match.candidates,
+        propertyReviewManagerId: match.property ? null : fallback.mode === 'DESIGNATED_MANAGER' ? fallback.managerId : null,
+      });
+      activities.push(await recordReceived(tx, id, source, viewerId));
+      if (input.assignTo) {
+        const row = await propertyRepo.findById(property.id, tx);
+        if (!row?.is_active) throw new AppError(409, 'Property is inactive and cannot receive leads');
+        await repo.markAssigned(tx, id, input.assignTo.executiveId);
+        await assignmentRepo.insertHistory(tx, {
+          propertyId: property.id,
+          executiveId: input.assignTo.executiveId,
+          leadId: id,
+          method: 'MANUAL',
+          assignedById: input.assignTo.byId,
+        });
+        activities.push(...(await recordAssigned(tx, { leadId: id, executiveId: input.assignTo.executiveId, how: 'MANUAL', byId: input.assignTo.byId })));
+        return { leadId: id, notice: undefined };
+      }
+      if (!match.property) {
+        const row = await propertyRepo.findById(property.id, tx);
+        return { leadId: id, notice: `Property requires review before this lead can be assigned. ${row?.name ?? input.propertyName}` };
+      }
+      const assignment = await propertyAssignmentService.assignLeadToProperty(property.id, id, tx);
+      if (assignment) {
+        await repo.markAssigned(tx, id, assignment.executiveId);
+        activities.push(...(await recordAssigned(tx, { leadId: id, executiveId: assignment.executiveId, how: 'ROUND_ROBIN' })));
+        return { leadId: id, notice: undefined };
+      }
+      const row = await propertyRepo.findById(property.id, tx);
+      return { leadId: id, notice: pendingNotice(row!.name) };
+    });
+    await publishLeadCreated(leadId, activities); // after the commit: a failed lead never announces itself
+    return { created: true, lead: toLeadDto((await repo.findById(leadId, undefined, undefined, viewerId))!), ...(notice ? { notice } : {}) };
+  } catch (err) {
+    // The same external enquiry arrived twice at once: the other request won, return its lead.
+    if (externalLeadId && (err as { constraint?: string }).constraint === repo.LEAD_EXTERNAL_UNIQUE) {
+      const winner = await repo.findByExternalId(source, externalLeadId, viewerId);
+      if (winner) return { created: false, lead: toLeadDto(winner) };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Throws unless `executiveId` is an active sales user the actor may give leads to: any of them for an admin,
+ * only their own executives (users.manager_id = the manager) for a manager (`managerId`).
+ */
+export async function assertAssignable(executiveId: string, managerId?: string): Promise<void> {
+  const target = await executiveRepo.findById(executiveId);
+  if (!target || target.deleted_at) throw new AppError(400, 'Executive not found');
+  if (target.role !== 'SALES') throw new AppError(400, 'Leads can only be assigned to sales executives or executive managers');
+  if (!target.is_active) throw new AppError(409, 'Executive is inactive');
+  if (managerId) {
+    if (target.manager_id !== managerId) throw new ForbiddenError('You can only assign leads to your own executives');
+  }
+}
+
+/**
+ * Called when a property gets executives: assigns its PENDING_ASSIGNMENT leads, oldest first, through the
+ * same round-robin. Runs inside the caller's transaction. Returns how many leads were assigned.
+ * `assignedIds` (optional) collects those leads so the caller can announce them once its transaction commits.
+ */
+export async function assignPendingLeads(propertyId: string, tx: Db, assignedIds?: string[], activities?: ActivityRow[]): Promise<number> {
+  const property = await propertyRepo.findById(propertyId, tx);
+  if (!property?.is_active) return 0;
+  let assigned = 0;
+  for (const leadId of await repo.lockPendingIds(tx, propertyId)) {
+    const result = await propertyAssignmentService.assignLeadToProperty(propertyId, leadId, tx);
+    if (!result) break; // nobody available: the rest stay pending
+    await repo.markAssigned(tx, leadId, result.executiveId);
+    const written = await recordAssigned(tx, { leadId, executiveId: result.executiveId, how: 'PENDING_ASSIGNED' });
+    activities?.push(...written);
+    assignedIds?.push(leadId);
+    assigned++;
+  }
+  return assigned;
+}
+
+/**
+ * One lead plus the client's other enquiries (their history: property, requirement, budget, date, executive,
+ * status, notes). With `ownerId` (executive) opening the lead also clears its "New" indicator.
+ */
+export async function getLeadDetail(id: string, ownerId?: string, managerId?: string, viewerId?: string, tz?: string, historicalExecutiveId?: string) {
+  let visible = await repo.findById(id, ownerId, managerId);
+  const currentOwner = visible?.executive_id === ownerId;
+  if (!visible && historicalExecutiveId && (await repo.wasEverAssignedTo(id, historicalExecutiveId))) {
+    visible = await repo.findById(id);
+  }
+  if (!visible) throw new NotFoundError('Lead not found');
+  if (currentOwner) await repo.markSeen(id, ownerId!);
+  const lead = toLeadDto((await repo.findById(id, visible.executive_id === ownerId ? ownerId : undefined, managerId, viewerId))!, tz);
+  const history = (await repo.listForCustomer(lead.customer.id, id, 50, viewerId)).map((r) => {
+    const { customer: _c, ...entry } = toLeadDto(r, tz);
+    return entry;
+  });
+  const activity = (await activityRepo.listForLead(id)).map(activityRepo.toActivityDto);
+  return { ...lead, customerHistory: history, customerEnquiryCount: history.length + 1, activity };
+}
+
+export async function addComment(id: string, actor: { id: string; role: UserRole }, comment: string) {
+  const ownerId = actor.role === 'SALES' ? actor.id : undefined;
+  const managerId = actor.role === 'MANAGER' ? actor.id : undefined;
+  const activity = await withTransaction(async (tx) => {
+    const lead = await repo.lockForComment(tx, id, ownerId, managerId);
+    if (!lead) throw new NotFoundError('Lead not found');
+    return recordComment(tx, { leadId: id, comment, actorId: actor.id, executiveId: lead.executive_id });
+  });
+  await publishCommentAdded(id, [activity]);
+  return getLeadDetail(id, ownerId, managerId, actor.id);
+}
+
+/** Executive dashboard numbers: how many leads are new (unopened) and the split by status. */
+export async function executiveSummary(executiveId: string) {
+  const rows = await repo.summaryFor(executiveId);
+  return {
+    newLeads: rows.reduce((n, r) => n + r.unseen, 0),
+    totalLeads: rows.reduce((n, r) => n + r.total, 0),
+    byStatus: Object.fromEntries(rows.map((r) => [r.status, r.total])),
+  };
+}
+
+export const listLeads = async (f: repo.LeadFilters) => (await repo.list(f)).map((r) => toLeadDto(r, f.tz));
+
+export async function listUnmatchedPropertyLeads(f: repo.LeadFilters) {
+  return (await repo.list({ ...f, unresolvedProperty: true })).map((r) => toLeadDto(r, f.tz));
+}
+
+export async function propertyMatchCandidates(id: string) {
+  const lead = await repo.findById(id);
+  if (!lead) throw new NotFoundError('Lead not found');
+  const result = await matchProperty({
+    source: lead.source,
+    propertyName: lead.requested_property_name ?? lead.property_name,
+    externalPropertyId: lead.external_property_id,
+    externalPropertyName: lead.external_property_name,
+    externalPropertyUrl: lead.external_property_url,
+  });
+  return { lead: toLeadDto(lead), match: result };
+}
+
+async function resolveUnmatchedLead(id: string, propertyId: string, actorId: string, registerMapping: boolean, mappingOverrides?: { externalPropertyId?: string | null; externalPropertyName?: string | null; externalListingUrl?: string | null }) {
+  let assignedExecutiveId: string | null = null;
+  const activities: ActivityRow[] = [];
+  await withTransaction(async (tx) => {
+    const lead = await repo.lockForPropertyResolution(tx, id);
+    if (!lead) throw new NotFoundError('Lead not found');
+    if (!['UNMATCHED', 'AMBIGUOUS', 'CONFLICT'].includes(lead.property_match_status)) throw new AppError(409, 'Lead property is already resolved');
+    const property = await propertyRepo.findById(propertyId, tx);
+    if (!property) throw new NotFoundError('Property not found');
+    if (!property.is_active) throw new AppError(409, 'Property is inactive and cannot receive leads');
+    if (registerMapping) {
+      const externalId = mappingOverrides?.externalPropertyId ?? lead.external_property_id;
+      const externalName = mappingOverrides?.externalPropertyName ?? lead.external_property_name ?? lead.property_name;
+      if (externalId || externalName) {
+        const normalizedName = normalizePropertyName(externalName ?? property.name);
+        const url = mappingOverrides?.externalListingUrl ?? lead.external_property_url;
+        const moved = externalId
+          ? await mappingRepo.reassignActiveExternalId(tx, { source: lead.source, externalId, propertyId, externalName, normalizedName, url, actorId })
+          : false;
+        if (!moved) await mappingRepo.insert(tx, { propertyId, source: lead.source, externalId, externalName, normalizedName, url, actorId });
+      }
+    }
+    await repo.resolveProperty(tx, id, propertyId, actorId);
+    activities.push(await recordPropertyResolved(tx, { leadId: id, propertyName: property.name, actorId }));
+    if (!lead.executive_id) {
+      const assignment = await propertyAssignmentService.assignLeadToProperty(propertyId, id, tx);
+      if (assignment) {
+        await repo.markAssigned(tx, id, assignment.executiveId);
+        assignedExecutiveId = assignment.executiveId;
+        activities.push(...(await recordAssigned(tx, { leadId: id, executiveId: assignment.executiveId, how: 'ROUND_ROBIN' })));
+      }
+    }
+  });
+  if (assignedExecutiveId) await publishAssignment({ leadId: id, previousExecutiveId: null, reason: 'PENDING_ASSIGNED', activities });
+  return getLeadDetail(id, undefined, undefined, actorId);
+}
+
+export async function resolveLeadProperty(id: string, propertyId: string, actorId: string) {
+  return resolveUnmatchedLead(id, propertyId, actorId, false);
+}
+
+export async function registerLeadPropertyMapping(id: string, input: { propertyId: string; externalPropertyId?: string | null; externalPropertyName?: string | null; externalListingUrl?: string | null }, actorId: string) {
+  return resolveUnmatchedLead(id, input.propertyId, actorId, true, input);
+}
+
+/** Pass `ownerId` for executives: they can only see their own leads. */
+export async function getLead(id: string, ownerId?: string, viewerId?: string, tz?: string) {
+  const lead = await repo.findById(id, ownerId, undefined, viewerId);
+  if (!lead) throw new NotFoundError('Lead not found');
+  return toLeadDto(lead, tz);
+}
+
+export async function updateStatus(
+  id: string,
+  status: Exclude<LeadStatus, 'PENDING_ASSIGNMENT'>,
+  ownerId?: string,
+  viewerId?: string,
+  statusReason?: { code: StatusReasonCode; other: string | null },
+) {
+  // One transaction with the row locked: the SLA sweep skips a locked lead, and an executive whose lead the sweep
+  // already moved finds it is no longer theirs. So a status change and a timeout reassignment can never both win.
+  const { previousStatus, activity } = await withTransaction(async (tx) => {
+    const current = await repo.lockForStatus(tx, id, ownerId);
+    if (!current) throw new NotFoundError('Lead not found');
+    if (current.status === 'PENDING_ASSIGNMENT') {
+      throw new AppError(409, 'This lead is pending assignment. Assign executives to its property first.');
+    }
+    await repo.setStatusIn(tx, id, status, statusReason?.code ?? null, statusReason?.other ?? null);
+    const written = await recordStatus(tx, { leadId: id, status, actorId: viewerId, executiveId: current.executive_id, reason: statusReason?.code, otherReason: statusReason?.other });
+    return { previousStatus: current.status, activity: written };
+  });
+  await publishStatusUpdated({ leadId: id, previousStatus, actorId: viewerId, activities: [activity] });
+  return getLead(id, ownerId, viewerId);
+}
+
+/**
+ * Admin or manager gives a lead to a specific sales executive / executive manager (same role, same rules).
+ *   ADMIN   : any lead, any active sales user.
+ *   MANAGER : leads in their scope (their executives' leads or unassigned ones), only to their own executives.
+ * Works for a pending lead (first assignment) and for reassignment. The round-robin pointer is not touched,
+ * and the assignment history records who did it.
+ */
+export async function assignLead(id: string, executiveId: string, actor: { id: string; role: 'ADMIN' | 'MANAGER' }) {
+  const managerId = actor.role === 'MANAGER' ? actor.id : undefined;
+  const lead = await repo.findById(id, undefined, managerId);
+  if (!lead) throw new NotFoundError('Lead not found');
+
+  await assertAssignable(executiveId, managerId);
+
+  if (lead.executive_id === executiveId) return getLead(id, undefined, actor.id); // already theirs: nothing to do
+  const activities = await withTransaction(async (tx) => {
+    await repo.assignTo(tx, id, executiveId);
+    await assignmentRepo.insertHistory(tx, {
+      propertyId: lead.property_id,
+      executiveId,
+      leadId: id,
+      method: 'MANUAL',
+      assignedById: actor.id,
+    });
+    return recordAssigned(tx, { leadId: id, executiveId, how: 'MANUAL', byId: actor.id });
+  });
+  await publishAssignment({ leadId: id, previousExecutiveId: lead.executive_id, reason: 'MANUAL', activities });
+  return getLead(id, undefined, actor.id);
+}
+
+export async function transferLead(id: string, targetExecutiveId: string, actor: { id: string; role: 'ADMIN' | 'MANAGER'; reason?: string }) {
+  const managerId = actor.role === 'MANAGER' ? actor.id : undefined;
+  const moved = await withTransaction(async (tx) => {
+    const lead = await repo.lockForTransfer(tx, id, managerId);
+    if (!lead) throw new NotFoundError('Lead not found');
+    if (!lead.executive_id) throw new AppError(409, 'A pending lead cannot be transferred');
+    if (lead.executive_id === targetExecutiveId) throw new AppError(409, 'Lead is already assigned to this executive');
+
+    const target = (await tx.query<{ id: string; role: string; is_active: boolean; deleted_at: Date | null; manager_id: string | null }>(
+      'SELECT id, role, is_active, deleted_at, manager_id FROM users WHERE id = $1 FOR SHARE',
+      [targetExecutiveId],
+    )).rows[0];
+    if (!target || target.deleted_at || target.role !== 'SALES') throw new AppError(400, 'Executive not found');
+    if (!target.is_active) throw new AppError(409, 'Executive is inactive');
+    if (managerId && target.manager_id !== managerId) throw new ForbiddenError('You can only transfer leads to your own executives');
+
+    await repo.assignTo(tx, id, targetExecutiveId);
+    await assignmentRepo.insertHistory(tx, {
+      propertyId: lead.property_id,
+      executiveId: targetExecutiveId,
+      leadId: id,
+      method: 'TRANSFER',
+      assignedById: actor.id,
+      reason: actor.reason ?? null,
+    });
+    return {
+      previousExecutiveId: lead.executive_id,
+      activities: await recordTransferred(tx, { leadId: id, previousExecutiveId: lead.executive_id, executiveId: targetExecutiveId, actorId: actor.id, reason: actor.reason }),
+    };
+  });
+  await publishAssignment({ leadId: id, previousExecutiveId: moved.previousExecutiveId, reason: 'TRANSFER', activities: moved.activities });
+  return getLead(id, undefined, actor.role === 'MANAGER' ? actor.id : undefined, actor.id);
+}
+
+/**
+ * Marks (or unmarks) a lead as important for the logged-in user only. The user must be able to see the lead
+ * through their own portal: admin any lead, manager their scope, sales user their own leads (otherwise 404).
+ * Idempotent in both directions. Returns the lead as this user sees it.
+ */
+export async function setImportant(id: string, actor: { id: string; role: UserRole }, important: boolean) {
+  const ownerId = actor.role === 'SALES' ? actor.id : undefined;
+  const managerId = actor.role === 'MANAGER' ? actor.id : undefined;
+  if (!(await repo.findById(id, ownerId, managerId))) throw new NotFoundError('Lead not found');
+  if (important) await repo.markImportant(actor.id, id);
+  else await repo.unmarkImportant(actor.id, id);
+  return toLeadDto((await repo.findById(id, ownerId, managerId, actor.id))!);
+}
+
+/**
+ * Sets, changes or (followUpAt null) clears the follow-up of a lead the actor can see through their own portal:
+ * admin any lead, manager their scope, sales user their own leads (otherwise 404). It only writes the follow-up
+ * fields: assignment, status and the SLA are never touched. A new or changed time must be in the future; keeping an
+ * already-overdue time (e.g. to edit its note) is allowed.
+ */
+export async function setFollowUp(
+  id: string,
+  actor: { id: string; role: UserRole },
+  input: { followUpAt: string | null; followUpNote?: string | null },
+  tz?: string,
+) {
+  const ownerId = actor.role === 'SALES' ? actor.id : undefined;
+  const managerId = actor.role === 'MANAGER' ? actor.id : undefined;
+  const lead = await repo.findById(id, ownerId, managerId);
+  if (!lead) throw new NotFoundError('Lead not found');
+  const at = input.followUpAt === null ? null : new Date(input.followUpAt);
+  if (at && at.getTime() <= Date.now() && at.getTime() !== lead.follow_up_at?.getTime()) {
+    throw new ValidationError([{ field: 'followUpAt', message: 'Follow-up must be in the future' }]);
+  }
+  await repo.setFollowUp(id, actor.id, at, input.followUpNote || null);
+  return toLeadDto((await repo.findById(id, ownerId, managerId, actor.id))!, tz);
+}
+
+/**
+ * Moves ONE timed-out lead to the next eligible executive. All in one transaction:
+ *   lock the lead and re-check it is still INCOMING and still past the timeout (SKIP LOCKED) ->
+ *   pick the next executive with the active assignment rule, never the current one ->
+ *   assign (assigned_at restarts the timer, seen_at is cleared so it is "new" for them) -> history row TIMEOUT.
+ * A lead that was handled, already reassigned or manually reassigned in the meantime is skipped, so concurrent
+ * sweeps can never reassign the same lead twice. The Important flag plays no part in any of this.
+ */
+export async function reassignTimedOutLead(leadId: string, minutes: number, at?: Date): Promise<'reassigned' | 'skipped'> {
+  const moved = await withTransaction(async (tx) => {
+    const lead = await repo.lockTimedOut(tx, leadId, minutes, at);
+    if (!lead) return null;
+    const next = await propertyAssignmentService.pickForReassignment(tx, lead.property_id, [lead.executive_id]);
+    if (!next) return null; // nobody else can take it (single executive, all inactive, inactive property)
+    await repo.assignTo(tx, leadId, next, at);
+    await assignmentRepo.insertHistory(tx, { propertyId: lead.property_id, executiveId: next, leadId, method: 'TIMEOUT' });
+    const activities = await recordTimeout(tx, { leadId, previousExecutiveId: lead.executive_id, executiveId: next });
+    return { previousExecutiveId: lead.executive_id, expiredAssignedAt: lead.assigned_at, activities };
+  });
+  if (!moved) return 'skipped';
+  await publishSlaReassignment({ leadId, ...moved }); // committed: now tell the people involved
+  return 'reassigned';
+}
+
+/**
+ * Warns the assigned executive shortly before the SLA runs out (SLA_WARNING_MINUTES, never more than half the SLA;
+ * 0 disables it). Read-only on leads: it does not touch the SLA or the reassignment, it only notifies, once per
+ * assignment. Safe to run from several processes and to repeat. Returns how many warnings were sent.
+ */
+export async function runSlaWarningPass(limit = 500, at?: Date): Promise<number> {
+  const timeoutMinutes = await settingsRepo.getLeadTimeoutMinutes();
+  const warnMinutes = Math.min(env.SLA_WARNING_MINUTES, Math.floor(timeoutMinutes / 2));
+  if (warnMinutes <= 0) return 0;
+  const candidates = await repo.findSlaWarnable(timeoutMinutes, warnMinutes, limit, at);
+  let sent = 0;
+  for (const c of candidates) {
+    if (await publishSlaWarning({ leadId: c.id, executiveId: c.executive_id, assignedAt: c.assigned_at, timeoutMinutes }, at)) sent++;
+  }
+  return sent;
+}
+
+export interface TimeoutSweepResult {
+  timeoutMinutes: number;
+  checked: number;
+  reassigned: number;
+  skipped: number;
+  failed: number;
+}
+
+/**
+ * One pass of the SLA check, using the admin-configured timeout. Safe to run from several processes at once.
+ * It is plain elapsed time (24/7: no working hours, weekends or holidays). `at` is the moment the pass is evaluated
+ * at; production never passes it (it is the database clock), tests use it to check nights, weekends and midnight.
+ */
+export async function runLeadTimeoutSweep(limit = 500, at?: Date): Promise<TimeoutSweepResult> {
+  const timeoutMinutes = await settingsRepo.getLeadTimeoutMinutes();
+  const ids = await repo.findTimedOutIds(timeoutMinutes, limit, at);
+  const result: TimeoutSweepResult = { timeoutMinutes, checked: ids.length, reassigned: 0, skipped: 0, failed: 0 };
+  for (const id of ids) {
+    try {
+      if ((await reassignTimedOutLead(id, timeoutMinutes, at)) === 'reassigned') result.reassigned++;
+      else result.skipped++;
+    } catch (err) {
+      result.failed++; // one bad lead must not stop the others; it is retried on the next pass
+      console.error('Lead timeout reassignment failed:', err instanceof Error ? err.message : err);
+    }
+  }
+  return result;
+}
+
+/** Milliseconds until the next lead's SLA runs out (the job wakes up then instead of waiting for its interval). */
+export async function msUntilNextTimeout(): Promise<number | null> {
+  return repo.msUntilNextTimeout(await settingsRepo.getLeadTimeoutMinutes());
+}
