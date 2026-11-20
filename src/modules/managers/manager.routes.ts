@@ -16,4 +16,5 @@ managerRouter.get('/:id', c.get);
 managerRouter.patch('/:id', validateBody(updateManagerSchema), c.update);
 managerRouter.delete('/:id', c.remove);
 managerRouter.patch('/:id/password', validateBody(passwordSchema), c.changePassword);
+managerRouter.post('/:id/promote', c.promoteToAdmin);
 managerRouter.patch('/:id/status', validateBody(statusSchema), c.setStatus);

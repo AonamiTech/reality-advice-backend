@@ -2,9 +2,10 @@ import type { Request, Response } from 'express';
 import { UnauthorizedError } from '../../utils/errors';
 import { parse } from '../../utils/validate';
 import * as service from './lead.service';
-import { idParam, listLeadsQuery, registerPropertyMappingSchema, resolvePropertySchema, tzQuery } from './lead.validation';
+import { commentIdParam, idParam, listLeadsQuery, registerPropertyMappingSchema, resolvePropertySchema, tzQuery } from './lead.validation';
 
 const id = (req: Request) => parse(idParam, req.params).id;
+const commentIds = (req: Request) => parse(commentIdParam, req.params);
 /** Optional `?tz=` (IANA zone) that decides where "today" is for follow-up states. */
 const tz = (req: Request) => parse(tzQuery, req.query).tz;
 const self = (req: Request): string => {
@@ -102,4 +103,12 @@ export const clearFollowUp = async (req: Request, res: Response) => {
 
 export const addComment = async (req: Request, res: Response) => {
   res.json(await service.addComment(id(req), actor(req), req.body.comment));
+};
+export const editComment = async (req: Request, res: Response) => {
+  const params = commentIds(req);
+  res.json(await service.editComment(params.id, params.commentId, actor(req), req.body.comment));
+};
+export const deleteComment = async (req: Request, res: Response) => {
+  const params = commentIds(req);
+  res.json(await service.deleteComment(params.id, params.commentId, actor(req)));
 };

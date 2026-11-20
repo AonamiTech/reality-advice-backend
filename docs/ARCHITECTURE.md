@@ -54,6 +54,7 @@ PostgreSQL, SQL migrations in `migrations/` (applied in numeric order, tracked i
 | 021 | `personal_notes`: private notepad per user (`user_id` CASCADE); admins and managers cannot read another user's notes |
 | 022 | lead transfers: `TRANSFER` assignment history, optional reason, and `TRANSFERRED` activity type |
 | 023 | adds the `INVALID` lead status and persisted `LOST`/`INVALID` status reasons, including a 20-character custom `OTHER` value |
+| 040 | `users.admin_access`: allows a Manager to use Admin permissions without losing Manager access |
 | 026 | adds projects, structured property attributes, inventory units, safe project/inventory code sequences and lifecycle indexes |
 | 027 | backfills archive timestamps for legacy inactive properties |
 | 028 | portal property mappings, lead property-match metadata, unresolved-property routing setting and resolution activity |
@@ -129,6 +130,7 @@ For portal leads, property matching runs before the existing assignment step: ex
 - Anything that creates or assigns a lead must run inside **one transaction** and accept a `Db` (pool or transaction client) so callers can compose it.
 - Executives only ever see their own leads: the executive id comes from the token (`req.user.id`), never from the request. Someone else's lead is `404`, not `403`. The same goes for a manager's scope.
 - Never branch permissions on `designation`; use `role`. Designation is display-only.
+- An Admin may grant a live Manager additional Admin access with `POST /admin/managers/:id/promote`; the account remains `MANAGER`, keeps its designation and manager scope, and can use both Admin and Manager portals. Multiple managers may have this access.
 - Property names are never typed in by admins to create properties; leads create them. Admin work on a property is editing details and choosing executives.
 - "Is this executive available?" lives only in `assignment/availability.service.ts`. Add leave or working-hours rules there, not in the assignment logic.
 - New database objects go in a new numbered migration, never by editing an applied one.

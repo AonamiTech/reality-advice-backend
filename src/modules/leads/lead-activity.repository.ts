@@ -49,3 +49,34 @@ export async function listForLead(leadId: string): Promise<ActivityRow[]> {
   );
   return rows;
 }
+
+export async function findCommentForMutation(db: Db, id: string): Promise<ActivityRow | null> {
+  const { rows } = await db.query<ActivityRow>(
+    `SELECT a.*, u.name AS actor_name FROM lead_activities a LEFT JOIN users u ON u.id = a.actor_id
+     WHERE a.id = $1 AND a.type = 'COMMENT_ADDED'`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+export async function updateComment(db: Db, id: string, actorId: string, message: string): Promise<ActivityRow | null> {
+  const { rows } = await db.query<ActivityRow>(
+    `UPDATE lead_activities SET message = $3
+     WHERE id = $1 AND actor_id = $2 AND type = 'COMMENT_ADDED' AND created_at > now() - interval '3 minutes'
+     RETURNING *`,
+    [id, actorId, message],
+  );
+  if (!rows[0]) return null;
+  const actor = await db.query<{ name: string }>('SELECT name FROM users WHERE id = $1', [rows[0].actor_id]);
+  rows[0].actor_name = actor.rows[0]?.name ?? null;
+  return rows[0];
+}
+
+export async function deleteComment(db: Db, id: string, actorId: string): Promise<boolean> {
+  const result = await db.query(
+    `DELETE FROM lead_activities
+     WHERE id = $1 AND actor_id = $2 AND type = 'COMMENT_ADDED' AND created_at > now() - interval '3 minutes'`,
+    [id, actorId],
+  );
+  return result.rowCount === 1;
+}

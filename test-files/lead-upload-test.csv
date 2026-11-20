@@ -1,0 +1,7 @@
+Name,Mobile,Email id,Project name,Source,Manual Sub Source,Lead Type,Enquiry,Budget,Requirement,Message,External Lead Id
+Aarav Mehta,9876543210,aarav.mehta@example.com,"Sunrise Heights, Thane",MANUAL,WALK_IN,INDIVIDUAL,RENT,45000,"2 BHK rental","Interested in a 2 BHK rental home",UPLOAD-MANUAL-001
+Nisha Kapoor,9876543211,nisha.kapoor@example.com,Rustomjee Elita,99ACRES,,INDIVIDUAL,BUY,8500000,"2 BHK apartment","Interested in site visit",UPLOAD-99ACRES-001
+Kabir Shah,9876543212,kabir.shah@example.com,Lakeview Commercial, MAGICBRICKS,,BROKER_AGENT,BUY,12500000,"Commercial office space","Looking for office investment",UPLOAD-MAGICBRICKS-001
+Meera Joshi,9876543213,meera.joshi@example.com,Green Valley Residency,MANUAL,SOCIAL_MEDIA,INDIVIDUAL,BUY,6500000,"3 BHK apartment","First duplicate-test row",UPLOAD-DUPLICATE-001
+Rohan Joshi,9876543214,rohan.joshi@example.com,Green Valley Residency,MANUAL,SOCIAL_MEDIA,INDIVIDUAL,BUY,6500000,"3 BHK apartment","Second duplicate-test row",UPLOAD-DUPLICATE-001
+Invalid Lead,12345,not-an-email,,MANUAL,WALK_IN,INDIVIDUAL,BUY,not-a-number,"Unknown requirement","This row should show validation errors",UPLOAD-INVALID-001

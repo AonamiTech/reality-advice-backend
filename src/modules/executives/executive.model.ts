@@ -8,6 +8,7 @@ export interface ExecutiveRow {
   phone: string | null;
   username: string;
   role: UserRole;
+  admin_access: boolean;
   designation: UserDesignation | null;
   is_active: boolean;
   manager_id: string | null;
@@ -26,6 +27,7 @@ export const toExecutiveDto = (e: ExecutiveRow) => ({
   username: e.username,
   role: e.role,
   designation: e.designation,
+  ...(e.admin_access ? { isAdmin: true } : {}),
   isActive: e.is_active,
   // The manager this sales user reports to (always null for admins and managers).
   manager: e.manager_id ? { id: e.manager_id, name: e.manager_name, isActive: e.manager_is_active } : null,

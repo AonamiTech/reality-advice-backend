@@ -53,6 +53,12 @@ export const authorizeRoles =
   (...allowed: UserRole[]): RequestHandler =>
   (req, _res, next) => {
     if (!req.user) return next(new UnauthorizedError());
-    if (!allowed.includes(req.user.role)) return next(new ForbiddenError());
+    const hasAdminAccess = req.user.role === 'ADMIN' || req.user.isAdmin === true;
+    if (!allowed.includes(req.user.role) && !(allowed.includes('ADMIN') && hasAdminAccess)) return next(new ForbiddenError());
+    // A manager with additional Admin access uses Admin permissions only for
+    // this Admin-protected request; manager routes still see MANAGER scope.
+    if (allowed.includes('ADMIN') && hasAdminAccess && req.user.role !== 'ADMIN') {
+      req.user = { ...req.user, role: 'ADMIN' };
+    }
     next();
   };

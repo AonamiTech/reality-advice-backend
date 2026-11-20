@@ -4,6 +4,7 @@ import { MANUAL_LEAD_SUB_SOURCES, PROPERTY_SOURCES } from '../properties/propert
 import { ENQUIRY_TYPES, INVALID_REASONS, LEAD_STATUSES, LEAD_TYPES, LOST_REASONS, PIPELINE_STATUSES, STATUS_REASONS, isValidTimeZone } from './lead.model';
 
 export const idParam = z.object({ id: z.uuid('Invalid id') });
+export const commentIdParam = z.object({ id: z.uuid('Invalid id'), commentId: z.uuid('Invalid comment id') });
 
 export const createLeadSchema = z.strictObject({
   name: customerName,
