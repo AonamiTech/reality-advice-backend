@@ -81,6 +81,7 @@ export interface LeadFilters {
   /** A manager's view: their executives' leads plus unassigned ones. */
   managerId?: string;
   customerId?: string;
+  source?: PropertySource;
   search?: string;
   /** Only leads assigned to an executive that they have not opened yet. */
   isNew?: boolean;
@@ -107,6 +108,7 @@ export async function list(f: LeadFilters): Promise<LeadRow[]> {
   const viewer = `$${params.push(f.viewerId ?? null)}`;
   if (f.important !== undefined) where.push(f.important ? IMPORTANT(viewer) : `NOT ${IMPORTANT(viewer)}`);
   if (f.status) where.push(`l.status = $${params.push(f.status)}`);
+  if (f.source) where.push(`l.source = $${params.push(f.source)}`);
   if (f.statusReason) where.push(`l.status_reason = $${params.push(f.statusReason)}`);
   if (f.propertyMatchStatus) where.push(`l.property_match_status = $${params.push(f.propertyMatchStatus)}`);
   if (f.unresolvedProperty) where.push(`l.property_match_status IN ('UNMATCHED', 'AMBIGUOUS', 'CONFLICT')`);

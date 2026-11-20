@@ -66,13 +66,19 @@ export const statusSchema = z.strictObject({ status: setStatus, reason: statusRe
 
 export const tzQuery = z.object({ tz: z.string().refine(isValidTimeZone, 'tz must be an IANA timezone, e.g. Asia/Kolkata').optional() });
 
-export const listLeadsQuery = z.object({
+const emptyQueryValues = (value: unknown) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, current]) => [key, typeof current === 'string' && current.trim() === '' ? undefined : current]));
+};
+
+export const listLeadsQuery = z.preprocess(emptyQueryValues, z.object({
   status: filterStatus.optional(),
   statusReason: z.enum(STATUS_REASONS).optional(),
   propertyId: z.uuid('Invalid property id').optional(),
   propertyMatchStatus: z.enum(['MATCHED', 'UNMATCHED', 'AMBIGUOUS', 'RESOLVED', 'CONFLICT']).optional(),
   executiveId: z.uuid('Invalid executive id').optional(),
   customerId: z.uuid('Invalid customer id').optional(),
+  source: z.enum(PROPERTY_SOURCES, { error: `Source must be one of: ${PROPERTY_SOURCES.join(', ')}` }).optional(),
   // Only the leads you marked important (true) or did not (false).
   important: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   isNew: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
@@ -84,7 +90,7 @@ export const listLeadsQuery = z.object({
   search: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
-});
+}));
 
 export const assignLeadSchema = z.strictObject({ executiveId: z.uuid('Invalid executive id') });
 export const transferLeadSchema = z.strictObject({
