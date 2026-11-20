@@ -17,6 +17,42 @@ async function getProperty(id: string): Promise<PropertyRow> {
   return p;
 }
 
+export async function createProperty(input: {
+  name: string;
+  description?: string | null;
+  location?: string | null;
+  projectId?: string | null;
+  transactionType?: string | null;
+  propertyType?: string | null;
+  minPrice?: number | null;
+  maxPrice?: number | null;
+  currency: string;
+  isActive: boolean;
+  executiveIds: string[];
+}) {
+  const executiveIds = [...new Set(input.executiveIds)];
+  if (input.projectId) await projectService.assertActive(input.projectId);
+  await assertAssignable(executiveIds);
+  const priceBand = classifyPriceBand(input.minPrice ?? null, input.maxPrice ?? null);
+  const id = await withTransaction(async (tx) => repo.insert(tx, {
+    name: input.name.replace(/\s+/g, ' '),
+    description: input.description ?? null,
+    location: input.location ?? null,
+    projectId: input.projectId ?? null,
+    transactionType: input.transactionType ?? null,
+    propertyType: input.propertyType ?? null,
+    minPrice: input.minPrice ?? null,
+    maxPrice: input.maxPrice ?? null,
+    currency: input.currency,
+    priceBand,
+    isActive: input.isActive,
+  }).then(async (propertyId) => {
+    await repo.replaceExecutives(tx, propertyId, executiveIds);
+    return propertyId;
+  }));
+  return getPropertyDetails(id);
+}
+
 export const listProperties = async (f: Parameters<typeof repo.list>[0]) => (await repo.list(f)).map(toPropertyDto);
 
 export async function getPropertyDetails(id: string, inquiryLimit = 50, inquiryOffset = 0, managerId?: string) {

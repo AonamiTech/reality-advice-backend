@@ -47,6 +47,28 @@ export const findById = async (id: string, db: Db = pool): Promise<PropertyRow |
 export const findByName = async (name: string, db: Db = pool): Promise<PropertyRow | null> =>
   (await db.query<PropertyRow>(`${SELECT} WHERE p.name_key = ${NAME_KEY('$1')}`, [name])).rows[0] ?? null;
 
+export async function insert(db: Db, input: {
+  name: string;
+  description: string | null;
+  location: string | null;
+  projectId: string | null;
+  transactionType: string | null;
+  propertyType: string | null;
+  minPrice: number | null;
+  maxPrice: number | null;
+  currency: string;
+  priceBand: string | null;
+  isActive: boolean;
+}): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO properties (name, description, location, project_id, transaction_type, property_type, min_price, max_price, currency, price_band, is_active, is_stub, archived_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, CASE WHEN $11 THEN NULL ELSE now() END)
+     RETURNING id`,
+    [input.name, input.description, input.location, input.projectId, input.transactionType, input.propertyType, input.minPrice, input.maxPrice, input.currency, input.priceBand, input.isActive],
+  );
+  return rows[0].id;
+}
+
 /** Matches punctuation-insensitively for the property matcher; returns all candidates so ambiguity is visible. */
 export async function findByNormalizedPortalName(name: string, db: Db = pool): Promise<PropertyRow[]> {
   const expression = `lower(regexp_replace(regexp_replace(btrim(p.name), '[^[:alnum:]]+', ' ', 'g'), '\\s+', ' ', 'g'))`;
