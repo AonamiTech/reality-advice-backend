@@ -205,7 +205,7 @@ Base path `/api/v1`. All errors look like `{ "success": false, "message": "…",
 | Inventory | `/admin/inventory` (list/filter, create, get, edit, archive, status) | admin |
 | Portal mappings | `/admin/property-mappings` (list, create, view, update, deactivate), `/admin/properties/:id/mappings` | admin |
 | Clients | `/admin/customers` (list, get with all enquiries, edit) | admin |
-| Leads | `/admin/leads` (create, list, get + client history/activity, `:id/comments`, status, `:id/assign`) | admin |
+| Leads | `/admin/leads` (create, list, get + client history/activity, `:id/comments`, status, `:id/assign`); `/admin/leads/imports` (CSV/XLSX preview, status, confirm) | admin |
 | Settings | `GET` / `PUT` `/admin/settings/assignment-rule` (default `ROUND_ROBIN`), `/admin/settings/lead-timeout` (SLA, default 90 minutes), `/admin/settings/unmatched-property-routing` | admin only |
 | Reports | `/admin/reports/{overview,leads,executives,managers,sources,properties,transactions,follow-ups}`; scoped equivalents under `/manager/reports` and `/executive/reports` | admin / manager / sales |
 | Manager portal | `/manager/executives` (list, get), `/manager/leads` (list, get, `:id/comments`, `:id/assign`), `/manager/properties` (list, get, `PUT :id/executives`: only their own executives' part of the list) | manager |
@@ -217,6 +217,38 @@ Base path `/api/v1`. All errors look like `{ "success": false, "message": "…",
 | Health | `GET /health` | public |
 
 ### Project and inventory examples
+
+### Lead upload
+
+Lead uploads are staged before creation. Upload a CSV or XLSX file, review the row-level errors and counts, then confirm the import. Only valid rows are sent through the existing lead creation workflow, so property matching, stub creation, assignment, round-robin, activity history and duplicate external-lead handling remain unchanged.
+
+Required columns:
+
+```text
+name,mobile,propertyName,source
+```
+
+Optional columns:
+
+```text
+email,manualSubSource,leadType,enquiryType,budget,requirement,message,externalLeadId
+```
+
+Column names are case-insensitive and common variants such as `Email id`, `Project name`, `Phone`, `Enquiry` and `Lead source` are accepted. `source` must be `99ACRES`, `MAGICBRICKS` or `MANUAL`. The maximum upload is 10 MB and 5,000 data rows.
+
+```bash
+curl -X POST 'https://api.example.com/api/v1/admin/leads/imports' \
+  -H 'Authorization: Bearer <admin-token>' \
+  -F 'file=@leads.csv'
+```
+
+The preview response returns an import `id`, `counts`, and each row's `rowNumber`, `status` and `validationErrors`. Confirm a preview with:
+
+```http
+POST /api/v1/admin/leads/imports/{importId}/confirm
+```
+
+The import is idempotent: confirmed rows are not processed again. Rows with an existing `(source, externalLeadId)` are marked `DUPLICATE`; mobile/property similarity alone is not treated as a duplicate. Invalid rows remain visible and are not created.
 
 Create a project:
 
