@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { validateBody } from '../../middleware/validate';
 import * as c from './lead.controller';
 import { assignLeadSchema, commentSchema, createLeadSchema, followUpSchema, managerCreateLeadSchema, registerPropertyMappingSchema, resolvePropertySchema, statusSchema, transferLeadSchema } from './lead.validation';
+import { leadImportRouter } from '../lead-import/lead-import.routes';
 
 export const adminLeadRouter = Router();
+adminLeadRouter.use('/imports', leadImportRouter);
 adminLeadRouter.get('/', c.adminList);
 adminLeadRouter.post('/', validateBody(createLeadSchema), c.adminCreate);
 adminLeadRouter.get('/unmatched-properties', c.adminUnmatchedProperties);
