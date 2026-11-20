@@ -200,7 +200,7 @@ Base path `/api/v1`. All errors look like `{ "success": false, "message": "…",
 | Zoho Mail | `GET /auth/zoho/connect`, `GET /auth/zoho/callback`, `GET /integrations/zoho/status`, `POST /integrations/zoho/test-email`, `POST /integrations/zoho/disconnect` | admin for management; callback public |
 | Managers | `/admin/managers` (CRUD, status, password) | admin |
 | Sales executives | `/admin/executives` (CRUD incl. `designation`, `managerId`, status, password; `PATCH/DELETE /:id/manager` sets or clears the manager) | admin |
-| Properties | `/admin/properties` (list, get, edit, status, `PUT :id/executives`, assignment history) | admin |
+| Properties | `/admin/properties` (list, create, get, edit, status, `PUT :id/executives`, assignment history) | admin |
 | Projects | `/admin/projects` (list/search, create, get with related properties, edit, archive) | admin |
 | Inventory | `/admin/inventory` (list/filter, create, get, edit, archive, status) | admin |
 | Portal mappings | `/admin/property-mappings` (list, create, view, update, deactivate), `/admin/properties/:id/mappings` | admin |
@@ -235,6 +235,18 @@ Content-Type: application/json
 
 {"projectId":"{projectId}","transactionType":"SALE_PURCHASE","propertyType":"RESIDENTIAL","minPrice":15000000,"maxPrice":18000000}
 ```
+
+Admins can also create a property directly from the Admin form/API. This creates a verified (non-stub) property and can assign its executive pool in the same request:
+
+```http
+POST /api/v1/admin/properties
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{"name":"Rustomjee Elita - ABC","location":"Andheri West","transactionType":"SALE_PURCHASE","propertyType":"RESIDENTIAL","minPrice":2500000,"maxPrice":3000000,"currency":"INR","executiveIds":["{activeExecutiveId}"]}
+```
+
+`name` is required. Project and structured fields are optional; `executiveIds` may contain zero or more active executives. Duplicate names return `409`, invalid project/executive IDs return `404`, and invalid request data returns `422`. Unknown properties received from portal leads continue to use the existing stub-creation flow.
 
 Create a unit:
 

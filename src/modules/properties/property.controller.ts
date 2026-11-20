@@ -9,6 +9,10 @@ const id = (req: Request) => parse(idParam, req.params).id;
 export const list = async (req: Request, res: Response) => {
   res.json(await service.listProperties(parse(listPropertiesQuery, req.query)));
 };
+export const create = async (req: Request, res: Response) => {
+  if (!req.user) throw new UnauthorizedError();
+  res.status(201).json(await service.createProperty(req.body));
+};
 export const get = async (req: Request, res: Response) => {
   const q = parse(inquiryQuery, req.query);
   const managerId = req.user?.role === 'MANAGER' ? req.user.id : undefined;

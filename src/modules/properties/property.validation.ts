@@ -8,7 +8,25 @@ const money = z.number({ error: 'Price must be a number' }).min(0).max(1e12);
 
 export const idParam = z.object({ id: z.uuid('Invalid id') });
 
-// Properties are created automatically from leads, so there is no create schema. Only details can be edited.
+export const createPropertySchema = z
+  .strictObject({
+    name,
+    description: description.nullish(),
+    location: location.nullish(),
+    projectId: z.uuid('Invalid project id').nullish(),
+    transactionType: z.enum(TRANSACTION_TYPES).nullish(),
+    propertyType: z.enum(PROPERTY_TYPES).nullish(),
+    minPrice: money.nullish(),
+    maxPrice: money.nullish(),
+    currency: z.string().trim().length(3).toUpperCase().default('INR'),
+    isActive: z.boolean().default(true),
+    executiveIds: z.array(z.uuid('Invalid executive id')).max(100).default([]),
+  })
+  .refine((v) => v.maxPrice === null || v.maxPrice === undefined || v.minPrice === null || v.minPrice === undefined || v.minPrice <= v.maxPrice, {
+    path: ['maxPrice'],
+    message: 'Maximum price must be greater than or equal to minimum price',
+  });
+
 export const updatePropertySchema = z
   .strictObject({
     name: name.optional(),

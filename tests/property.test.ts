@@ -15,10 +15,7 @@ after(() => t.close());
 const lead = (extra: object = {}) =>
   t.call('/admin/leads', 'POST', { name: 'Ravi', mobile: '9876543210', propertyName: 'Green Valley Residency', source: '99ACRES', ...extra });
 
-describe('properties are created by leads, not by hand', () => {
-  it('there is no create endpoint', async () => {
-    assert.equal((await t.call('/admin/properties', 'POST', { name: 'X' })).status, 404);
-  });
+describe('properties can be created by Admin or discovered from leads', () => {
   it('a lead for an unknown name creates one stub property flagged as needing executives', async () => {
     assert.equal((await t.call('/admin/properties')).body.length, 0);
     assert.equal((await lead()).status, 201);
@@ -117,5 +114,32 @@ describe('hand-picked executives', () => {
     const cleared = await put({ executiveIds: [] });
     assert.equal(cleared.body.needsAssignment, true);
     assert.equal(cleared.body.assignedPendingLeads, 0);
+  });
+});
+
+describe('Admin property creation', () => {
+  it('creates a structured property and assigns active executives', async () => {
+    const response = await t.call('/admin/properties', 'POST', {
+      name: 'Admin Created Property',
+      description: 'Directly added by Admin',
+      location: 'Andheri West',
+      transactionType: 'SALE_PURCHASE',
+      propertyType: 'RESIDENTIAL',
+      minPrice: 2500000,
+      maxPrice: 3000000,
+      currency: 'INR',
+      executiveIds: [amit.id, rahul.id],
+    });
+    assert.equal(response.status, 201);
+    assert.equal(response.body.name, 'Admin Created Property');
+    assert.equal(response.body.isStub, false);
+    assert.equal(response.body.location, 'Andheri West');
+    assert.equal(response.body.priceBand, 'LAKHS');
+    assert.deepEqual(response.body.executives.map((e: any) => e.id).sort(), [amit.id, rahul.id].sort());
+  });
+
+  it('rejects duplicate property names and invalid project references', async () => {
+    assert.equal((await t.call('/admin/properties', 'POST', { name: 'Admin Created Property' })).status, 409);
+    assert.equal((await t.call('/admin/properties', 'POST', { name: 'Bad Project Property', projectId: ZERO })).status, 404);
   });
 });
