@@ -24,6 +24,9 @@ function createController(service: UserService, label: 'Executive' | 'Manager', 
       await service.changePassword(parse(idParam, req.params).id, req.body.password);
       res.json({ success: true, message: 'Password updated' });
     },
+    promoteToAdmin: async (req: Request, res: Response) => {
+      res.json(await service.promoteToAdmin(parse(idParam, req.params).id));
+    },
     setStatus: async (req: Request, res: Response) => {
       res.json(await service.setStatus(parse(idParam, req.params).id, req.body.isActive));
     },

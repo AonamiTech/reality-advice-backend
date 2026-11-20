@@ -26,7 +26,8 @@ export async function login(
   // Always run one hash verification so response time doesn't reveal whether the email exists.
   const passwordOk = await verifyPassword(user?.password_hash ?? (await getDummyHash()), password);
 
-  if (!user || !passwordOk || !user.is_active || (role && user.role !== role)) {
+  const hasRequestedRole = !role || user?.role === role || (role === 'ADMIN' && user?.admin_access === true);
+  if (!user || !passwordOk || !user.is_active || !hasRequestedRole) {
     throw new InvalidCredentialsError();
   }
 

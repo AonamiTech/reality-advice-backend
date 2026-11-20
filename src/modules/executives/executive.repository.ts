@@ -5,7 +5,7 @@ import type { UserDesignation, UserRole } from '../users/user.model';
 import type { ExecutiveRow } from './executive.model';
 
 const SELECT = `
-  SELECT u.id, u.name, u.email, u.phone, u.username, u.role, u.designation, u.is_active, u.manager_id,
+  SELECT u.id, u.name, u.email, u.phone, u.username, u.role, u.admin_access, u.designation, u.is_active, u.manager_id,
          u.created_at, u.updated_at, u.deleted_at,
          m.name AS manager_name, m.is_active AS manager_is_active
   FROM users u LEFT JOIN users m ON m.id = u.manager_id`;
@@ -58,6 +58,17 @@ export const updateProfile = (
 /** Also stamps password_changed_at: tokens issued before it stop working. */
 export const setPasswordHash = (id: string, hash: string) =>
   patchRow('users', id, { password_hash: hash, password_changed_at: new Date() });
+
+/** Grant Admin access while preserving the MANAGER role and manager portal scope. */
+export const grantAdminAccess = async (id: string): Promise<void> => {
+  await pool.query(
+    `UPDATE users
+        SET admin_access = true, updated_at = now()
+      WHERE id = $1 AND role = 'MANAGER' AND deleted_at IS NULL`,
+    [id],
+  );
+};
+
 export const setActive = (id: string, isActive: boolean) => patchRow('users', id, { is_active: isActive });
 export const setManager = (id: string, managerId: string | null) => patchRow('users', id, { manager_id: managerId });
 

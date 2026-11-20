@@ -229,6 +229,39 @@ export async function addComment(id: string, actor: { id: string; role: UserRole
   return getLeadDetail(id, ownerId, managerId, actor.id);
 }
 
+const commentScope = (actor: { id: string; role: UserRole }) => ({
+  ownerId: actor.role === 'SALES' ? actor.id : undefined,
+  managerId: actor.role === 'MANAGER' ? actor.id : undefined,
+});
+
+export async function editComment(leadId: string, commentId: string, actor: { id: string; role: UserRole }, comment: string) {
+  const { ownerId, managerId } = commentScope(actor);
+  const updated = await withTransaction(async (tx) => {
+    const commentRow = await activityRepo.findCommentForMutation(tx, commentId);
+    if (!commentRow || commentRow.lead_id !== leadId || commentRow.actor_id !== actor.id) throw new NotFoundError('Comment not found');
+    if (!(await repo.findById(leadId, ownerId, managerId))) throw new NotFoundError('Lead not found');
+    const result = await activityRepo.updateComment(tx, commentId, actor.id, comment);
+    if (!result) throw new AppError(409, 'Comments can only be edited within 3 minutes');
+    return result;
+  });
+  await publishCommentAdded(leadId, [updated]);
+  return getLeadDetail(leadId, ownerId, managerId, actor.id);
+}
+
+export async function deleteComment(leadId: string, commentId: string, actor: { id: string; role: UserRole }) {
+  const { ownerId, managerId } = commentScope(actor);
+  const deleted = await withTransaction(async (tx) => {
+    const commentRow = await activityRepo.findCommentForMutation(tx, commentId);
+    if (!commentRow || commentRow.lead_id !== leadId || commentRow.actor_id !== actor.id) throw new NotFoundError('Comment not found');
+    if (!(await repo.findById(leadId, ownerId, managerId))) throw new NotFoundError('Lead not found');
+    const result = await activityRepo.deleteComment(tx, commentId, actor.id);
+    if (!result) throw new AppError(409, 'Comments can only be deleted within 3 minutes');
+    return true;
+  });
+  if (deleted) await publishCommentAdded(leadId, []);
+  return getLeadDetail(leadId, ownerId, managerId, actor.id);
+}
+
 /** Executive dashboard numbers: how many leads are new (unopened) and the split by status. */
 export async function executiveSummary(executiveId: string) {
   const rows = await repo.summaryFor(executiveId);

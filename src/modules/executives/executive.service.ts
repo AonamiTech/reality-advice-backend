@@ -93,6 +93,17 @@ function createUserService(role: ManagedRole) {
     await revokeUserDevices(id);
   }
 
+  async function promoteToAdmin(id: string) {
+    if (role !== 'MANAGER') throw new AppError(400, 'Only managers can be promoted to admin');
+    await getUser(id);
+    await repo.grantAdminAccess(id);
+    disconnectUser(id);
+    await revokeUserDevices(id);
+    const promoted = await repo.findById(id);
+    if (!promoted) throw new NotFoundError('Manager not found');
+    return toExecutiveDto(promoted);
+  }
+
   async function setStatus(id: string, isActive: boolean) {
     await getUser(id);
     await repo.setActive(id, isActive);
@@ -132,7 +143,7 @@ function createUserService(role: ManagedRole) {
     return reload(id);
   }
 
-  return { list, details, create, update, changePassword, setStatus, remove, assignManager, removeManager };
+  return { list, details, create, update, changePassword, promoteToAdmin, setStatus, remove, assignManager, removeManager };
 }
 
 export const executiveService = createUserService('SALES');

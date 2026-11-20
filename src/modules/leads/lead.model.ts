@@ -1,6 +1,6 @@
 import type { ManualLeadSubSource, PropertySource } from '../properties/property.model';
 
-export const LEAD_STATUSES = ['PENDING_ASSIGNMENT', 'INCOMING', 'RINGING', 'CONNECTED', 'CLOSED', 'LOST', 'INVALID', 'BROKER'] as const;
+export const LEAD_STATUSES = ['PENDING_ASSIGNMENT', 'INCOMING', 'PRE_CONNECT', 'RINGING', 'CONNECTED', 'NOT_CONNECTED', 'HOLD', 'CLOSED', 'LOST', 'INVALID', 'BROKER'] as const;
 export type LeadStatus = (typeof LEAD_STATUSES)[number];
 export const INVALID_REASONS = ['NO_REQUIREMENT', 'NOT_ABLE_TO_CONNECT', 'OUT_OF_SERVICE_AREA', 'OTHER'] as const;
 export const LOST_REASONS = ['BUDGET_ISSUE', 'NOT_RESPONDING_PREVIOUSLY_CONNECTED', 'BOOKED_OTHER_CHANNEL', 'CHANGED_OR_DIFFERED_PLAN', 'OTHER'] as const;

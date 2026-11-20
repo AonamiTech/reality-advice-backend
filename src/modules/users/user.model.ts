@@ -19,6 +19,7 @@ export interface UserRecord {
   username: string;
   password_hash: string;
   role: UserRole;
+  admin_access: boolean;
   designation: UserDesignation | null;
   is_active: boolean;
   manager_id: string | null;
@@ -35,6 +36,8 @@ export interface PublicUser {
   email: string;
   role: UserRole;
   designation: UserDesignation | null;
+  /** True when a non-ADMIN account has additionally been granted Admin access. */
+  isAdmin?: boolean;
 }
 
 export const toPublicUser = (u: UserRecord): PublicUser => ({
@@ -43,4 +46,5 @@ export const toPublicUser = (u: UserRecord): PublicUser => ({
   email: u.email,
   role: u.role,
   designation: u.designation,
+  ...(u.admin_access ? { isAdmin: true } : {}),
 });

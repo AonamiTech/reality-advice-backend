@@ -186,8 +186,9 @@ Report endpoints accept the shared optional filters `fromDate`, `toDate`, `manag
 
 Use `format=csv` or `format=excel` on any report endpoint to download the same filtered lead dataset. CSV is `text/csv`; Excel is an Excel-compatible tab-separated `.xls` download. Spreadsheet formula prefixes are escaped. The current schema stores only the next follow-up, so completed follow-ups and conversion rates are not fabricated; the follow-up report explicitly reports that completion history is unavailable. Lead sources are `99ACRES`, `MAGICBRICKS` and `MANUAL`; manual leads may optionally use `manualSubSource` values `WALK_IN`, `SOCIAL_MEDIA`, `REFERRAL`, `PHONE` or `OTHER`.
 
-- **Roles:** `ADMIN` (everything under `/admin`, creates every account), `MANAGER` (`/manager`: looks after the sales users whose `managerId` is them, assigns leads and properties to them) and `SALES` (`/executive`: works their own leads). A separate `designation` (`MANAGER`, `SALES_EXECUTIVE`, `EXECUTIVE_MANAGER`) labels users: **Sales Executive and Executive Manager are the same role with identical permissions**. Tokens are role-bound, users sign in with email or username, and changing a password invalidates older tokens.
-- **Lead statuses:** `INCOMING → RINGING → CONNECTED → CLOSED / LOST / BROKER` (any order), plus the system status `PENDING_ASSIGNMENT`.
+- **Roles:** `ADMIN` (everything under `/admin`, creates every account), `MANAGER` (`/manager`: looks after the sales users whose `managerId` is them, assigns leads and properties to them) and `SALES` (`/executive`: works their own leads). A manager can additionally be granted Admin access with `POST /admin/managers/:id/promote`; the account remains a manager and can use both portals. A separate `designation` (`MANAGER`, `SALES_EXECUTIVE`, `EXECUTIVE_MANAGER`) labels users: **Sales Executive and Executive Manager are the same role with identical permissions**. Tokens are role-bound, users sign in with email or username, and changing a password invalidates older tokens.
+- **Lead statuses:** `INCOMING → PRE_CONNECT → RINGING → CONNECTED / NOT_CONNECTED / HOLD → CLOSED / LOST / INVALID / BROKER` (any order), plus the system status `PENDING_ASSIGNMENT`. `PRE_CONNECT`, `NOT_CONNECTED` and `HOLD` are operational statuses from the firm's procedure.
+- **Lead remarks:** `POST /…/leads/:id/comments` adds a timeline remark. The author may `PATCH` or `DELETE` their own remark for three minutes; after that it is immutable. Admin, Manager and the current Executive can add remarks according to their existing lead visibility scope.
 - **"New lead" for executives:** there is no push system yet. Each lead has `isNew` and `assignedAt`, and `/executive/leads/summary` gives the badge count. The frontend polls (see section 6 of `docs/FRONTEND_ROUND_ROBIN_GUIDE.md`).
 
 ## API overview
@@ -198,14 +199,14 @@ Base path `/api/v1`. All errors look like `{ "success": false, "message": "…",
 |---|---|---|
 | Auth | `POST /auth/admin/login`, `/auth/manager/login`, `/auth/executive/login`, `GET /auth/me` | public / any token |
 | Zoho Mail | `GET /auth/zoho/connect`, `GET /auth/zoho/callback`, `GET /integrations/zoho/status`, `POST /integrations/zoho/test-email`, `POST /integrations/zoho/disconnect` | admin for management; callback public |
-| Managers | `/admin/managers` (CRUD, status, password) | admin |
+| Managers | `/admin/managers` (CRUD, status, password, promote to admin) | admin |
 | Sales executives | `/admin/executives` (CRUD incl. `designation`, `managerId`, status, password; `PATCH/DELETE /:id/manager` sets or clears the manager) | admin |
 | Properties | `/admin/properties` (list, create, get, edit, status, `PUT :id/executives`, assignment history) | admin |
 | Projects | `/admin/projects` (list/search, create, get with related properties, edit, archive) | admin |
 | Inventory | `/admin/inventory` (list/filter, create, get, edit, archive, status) | admin |
 | Portal mappings | `/admin/property-mappings` (list, create, view, update, deactivate), `/admin/properties/:id/mappings` | admin |
 | Clients | `/admin/customers` (list, get with all enquiries, edit) | admin |
-| Leads | `/admin/leads` (create, list, get + client history/activity, `:id/comments`, status, `:id/assign`); `/admin/leads/imports` (CSV/XLSX preview, status, confirm) | admin |
+| Leads | `/admin/leads` (create, list, get + client history/activity, `:id/comments`, `:id/comments/:commentId` edit/delete, status, `:id/assign`); `/admin/leads/imports` (CSV/XLSX preview, status, confirm) | admin |
 | Settings | `GET` / `PUT` `/admin/settings/assignment-rule` (default `ROUND_ROBIN`), `/admin/settings/lead-timeout` (SLA, default 90 minutes), `/admin/settings/unmatched-property-routing` | admin only |
 | Reports | `/admin/reports/{overview,leads,executives,managers,sources,properties,transactions,follow-ups}`; scoped equivalents under `/manager/reports` and `/executive/reports` | admin / manager / sales |
 | Manager portal | `/manager/executives` (list, get), `/manager/leads` (list, get, `:id/comments`, `:id/assign`), `/manager/properties` (list, get, `PUT :id/executives`: only their own executives' part of the list) | manager |
